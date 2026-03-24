@@ -105,6 +105,7 @@ VIDEO_DIRECT_TARGET_SIZE_MB_KEY = "video_direct_target_size_mb"
 VIDEO_DIRECT_TIMEOUT_SEC_KEY = "video_direct_timeout_sec"
 BILIBILI_COOKIE_KEY = "bilibili_cookie"
 ZHIHU_COOKIE_KEY = "zhihu_cookie"
+URL_DOMAIN_BLACKLIST_KEY = "url_domain_blacklist"
 
 DEFAULT_URL_DETECT_ENABLE = True
 DEFAULT_URL_FETCH_TIMEOUT = 20
@@ -1572,6 +1573,37 @@ class ZssmExplain(Star):
             pass
         return default
 
+    def _get_domain_blacklist(self) -> Set[str]:
+        """从配置中读取域名黑名单，返回小写域名集合。"""
+        raw = self._get_conf_list_str(URL_DOMAIN_BLACKLIST_KEY)
+        result: Set[str] = set()
+        for item in raw:
+            domain = item.strip().lower().lstrip(".")
+            if domain:
+                result.add(domain)
+        return result
+
+    def _is_domain_blacklisted(self, url: str) -> bool:
+        """判断 URL 的域名是否在黑名单中。支持子域名匹配（如黑名单含 example.com，则 sub.example.com 也被拦截）。"""
+        blacklist = self._get_domain_blacklist()
+        if not blacklist:
+            return False
+        try:
+            from urllib.parse import urlparse
+            host = urlparse(url).hostname or ""
+            host = host.lower()
+        except Exception:
+            return False
+        if not host:
+            return False
+        if host in blacklist:
+            return True
+        # 子域名匹配：检查 host 是否以 ".{domain}" 结尾
+        for domain in blacklist:
+            if host.endswith("." + domain):
+                return True
+        return False
+
     def _get_file_preview_exts(self) -> Set[str]:
         """从配置构造文本文件预览的扩展名集合（含点）。"""
         raw = self._get_conf_str(FILE_PREVIEW_EXTS_KEY, DEFAULT_FILE_PREVIEW_EXTS)
@@ -1725,6 +1757,16 @@ class ZssmExplain(Star):
             urls = extract_urls_from_text(inline) if enable_url else []
             if urls:
                 target_url = urls[0]
+                if self._is_domain_blacklisted(target_url):
+                    logger.info(
+                        "zssm_explain: url blocked by domain blacklist: %s",
+                        target_url[:100],
+                    )
+                    return self._ReplyPlan(
+                        message="该链接的域名已被屏蔽，无法解析。",
+                        stop_event=True,
+                        cleanup_paths=cleanup_paths,
+                    )
                 if is_bilibili_url(target_url):
                     # 短链先展开，再判断真实类型
                     bili_type = get_bilibili_url_type(target_url)
@@ -1956,6 +1998,12 @@ class ZssmExplain(Star):
             return self._build_empty_input_reply_plan(cleanup_paths)
 
         urls = extract_urls_from_text(text) if (enable_url and text) else []
+        if urls and self._is_domain_blacklisted(urls[0]):
+            logger.info(
+                "zssm_explain: url blocked by domain blacklist: %s",
+                urls[0][:100],
+            )
+            urls = []
         if urls and not from_forward:
             target_url = urls[0]
             if is_bilibili_url(target_url):

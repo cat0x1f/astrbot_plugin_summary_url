@@ -32,6 +32,13 @@
     "default": true,
     "hint": "关闭后仅按文本/图片解释"
   },
+  "url_domain_blacklist": {
+    "description": "域名黑名单",
+    "type": "list",
+    "items": { "type": "string" },
+    "default": [],
+    "hint": "在此列表中的域名不会被解析，直接拒绝。支持子域名匹配，如填写 example.com 后 sub.example.com 也会被拦截"
+  },
   "enable_keyword_zssm": {
     "description": "是否启用 zssm 和额外关键词自动触发",
     "type": "bool",
