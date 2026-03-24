@@ -66,6 +66,7 @@ from .video_utils import (
     sample_frames_equidistant,
     sample_frames_with_ffmpeg,
 )
+from .twitter_utils import TwitterParseError, is_twitter_url, prepare_twitter_prompt
 from .zhihu_utils import ZhihuParseError, match_zhihu_url, prepare_zhihu_prompt
 
 """
@@ -1745,6 +1746,23 @@ class ZssmExplain(Star):
                 timeout_sec = self._get_conf_int(
                     URL_FETCH_TIMEOUT_KEY, DEFAULT_URL_FETCH_TIMEOUT, 2, 60
                 )
+                if is_twitter_url(target_url):
+                    try:
+                        twitter_ctx = await prepare_twitter_prompt(
+                            target_url,
+                            timeout_sec=timeout_sec,
+                        )
+                    except TwitterParseError as exc:
+                        return self._ReplyPlan(
+                            message=str(exc),
+                            stop_event=True,
+                            cleanup_paths=cleanup_paths,
+                        )
+                    return self._LLMPlan(
+                        user_prompt=twitter_ctx.prompt,
+                        images=twitter_ctx.images,
+                        cleanup_paths=cleanup_paths,
+                    )
                 if match_zhihu_url(target_url):
                     try:
                         zhihu_ctx = await prepare_zhihu_prompt(
@@ -1960,6 +1978,23 @@ class ZssmExplain(Star):
             timeout_sec = self._get_conf_int(
                 URL_FETCH_TIMEOUT_KEY, DEFAULT_URL_FETCH_TIMEOUT, 2, 60
             )
+            if is_twitter_url(target_url):
+                try:
+                    twitter_ctx = await prepare_twitter_prompt(
+                        target_url,
+                        timeout_sec=timeout_sec,
+                    )
+                except TwitterParseError as exc:
+                    return self._ReplyPlan(
+                        message=str(exc),
+                        stop_event=True,
+                        cleanup_paths=cleanup_paths,
+                    )
+                return self._LLMPlan(
+                    user_prompt=twitter_ctx.prompt,
+                    images=twitter_ctx.images,
+                    cleanup_paths=cleanup_paths,
+                )
             if match_zhihu_url(target_url):
                 try:
                     zhihu_ctx = await prepare_zhihu_prompt(
