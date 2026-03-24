@@ -26,16 +26,12 @@ URL_MAX_CHARS_KEY = "url_max_chars"
 SILENT_FAIL_KEY = "silent_fail"
 GROUP_LIST_MODE_KEY = "group_list_mode"
 GROUP_LIST_KEY = "group_list"
-CF_SCREENSHOT_ENABLE_KEY = "cf_screenshot_enable"
-CF_SCREENSHOT_SIZE_KEY = "cf_screenshot_size"
 KEEP_ORIGINAL_PERSONA_KEY = "keep_original_persona"
 ZHIHU_COOKIE_KEY = "zhihu_cookie"
 URL_DOMAIN_BLACKLIST_KEY = "url_domain_blacklist"
 
 DEFAULT_URL_FETCH_TIMEOUT = 20
 DEFAULT_URL_MAX_CHARS = 6000
-DEFAULT_CF_SCREENSHOT_ENABLE = True
-DEFAULT_CF_SCREENSHOT_SIZE = "1280x720"
 DEFAULT_KEEP_ORIGINAL_PERSONA = True
 ACCESS_WALL_SENTINEL = "[[ACCESS_WALL]]"
 
@@ -185,20 +181,6 @@ class ZssmExplain(Star):
             return True
         return any(host.endswith("." + domain) for domain in blacklist)
 
-    def _get_cf_screenshot_size(self) -> Tuple[int, int]:
-        raw = self._get_conf_str(CF_SCREENSHOT_SIZE_KEY, DEFAULT_CF_SCREENSHOT_SIZE)
-        width, height = 1280, 720
-        if "x" in raw.lower():
-            try:
-                left, right = raw.lower().split("x", 1)
-                width = int(left.strip())
-                height = int(right.strip())
-            except Exception:
-                width, height = 1280, 720
-        width = max(320, min(width, 4096))
-        height = max(240, min(height, 4096))
-        return width, height
-
     async def _build_system_prompt(self, event: AstrMessageEvent) -> str:
         return await build_system_prompt_for_event(
             self.context,
@@ -323,23 +305,16 @@ class ZssmExplain(Star):
         max_chars = self._get_conf_int(
             URL_MAX_CHARS_KEY, DEFAULT_URL_MAX_CHARS, min_v=1000, max_v=50000
         )
-        cf_enable = self._get_conf_bool(
-            CF_SCREENSHOT_ENABLE_KEY, DEFAULT_CF_SCREENSHOT_ENABLE
-        )
-        width, height = self._get_cf_screenshot_size()
         url_ctx = await prepare_url_prompt(
             target_url,
             timeout_sec,
             self._last_fetch_info,
             max_chars=max_chars,
-            cf_screenshot_enable=cf_enable,
-            cf_screenshot_width=width,
-            cf_screenshot_height=height,
             user_prompt_template=DEFAULT_URL_USER_PROMPT,
         )
         if not url_ctx:
             return self._build_error_reply_plan(
-                build_url_failure_message(self._last_fetch_info, cf_enable)
+                build_url_failure_message(self._last_fetch_info)
             )
 
         user_prompt, _text, images = url_ctx

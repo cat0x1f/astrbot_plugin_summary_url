@@ -44,18 +44,6 @@
     "default": 90,
     "hint": "用于避免模型长时间无响应；范围建议 5-600"
   },
-  "cf_screenshot_enable": {
-    "description": "Cloudflare 截图降级",
-    "type": "bool",
-    "default": true,
-    "hint": "网页被 Cloudflare 拦截时，尝试改用截图辅助解释"
-  },
-  "cf_screenshot_size": {
-    "description": "Cloudflare 截图尺寸（宽x高，px）",
-    "type": "string",
-    "default": "1280x720",
-    "hint": "格式示例：1280x720"
-  },
   "keep_original_persona": {
     "description": "是否保留当前会话人格",
     "type": "bool",
