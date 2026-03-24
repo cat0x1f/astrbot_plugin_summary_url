@@ -13,12 +13,6 @@
     "default": [],
     "hint": "仅在 whitelist/blacklist 模式下生效；留空等效于无限制"
   },
-  "enable_url_detect": {
-    "description": "是否启用链接自动解析",
-    "type": "bool",
-    "default": true,
-    "hint": "关闭后插件不会自动处理消息里的链接"
-  },
   "url_domain_blacklist": {
     "description": "域名黑名单",
     "type": "list",
@@ -37,6 +31,12 @@
     "type": "int",
     "default": 6000,
     "hint": "限制传给模型的网页正文长度，避免上下文过长"
+  },
+  "silent_fail": {
+    "description": "静默失败",
+    "type": "bool",
+    "default": false,
+    "hint": "开启后，抓取失败、解析失败、访问受限或模型异常时不返回错误提示"
   },
   "llm_timeout_sec": {
     "description": "LLM 调用超时时间（秒）",

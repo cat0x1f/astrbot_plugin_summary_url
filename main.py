@@ -23,6 +23,7 @@ from .zhihu_utils import ZhihuParseError, match_zhihu_url, prepare_zhihu_prompt
 
 URL_FETCH_TIMEOUT_KEY = "url_timeout_sec"
 URL_MAX_CHARS_KEY = "url_max_chars"
+SILENT_FAIL_KEY = "silent_fail"
 GROUP_LIST_MODE_KEY = "group_list_mode"
 GROUP_LIST_KEY = "group_list"
 CF_SCREENSHOT_ENABLE_KEY = "cf_screenshot_enable"
@@ -223,6 +224,14 @@ class ZssmExplain(Star):
             return body
         return f"{body}\n\ncost: {elapsed_sec:.3f}s"
 
+    def _should_suppress_errors(self) -> bool:
+        return self._get_conf_bool(SILENT_FAIL_KEY, False)
+
+    def _build_error_reply_plan(self, message: str) -> "_ReplyPlan":
+        if self._should_suppress_errors():
+            return self._ReplyPlan(message="", stop_event=False)
+        return self._ReplyPlan(message=message, stop_event=True)
+
     def _already_handled(self, event: AstrMessageEvent) -> bool:
         try:
             extras = event.get_extra()
@@ -274,7 +283,7 @@ class ZssmExplain(Star):
         target_url = urls[0]
         if self._is_domain_blacklisted(target_url):
             logger.info("zssm_explain: url blocked by domain blacklist: %s", target_url[:100])
-            return self._ReplyPlan(message="该链接的域名已被屏蔽，无法解析。")
+            return self._build_error_reply_plan("该链接的域名已被屏蔽，无法解析。")
 
         timeout_sec = self._get_conf_int(
             URL_FETCH_TIMEOUT_KEY, DEFAULT_URL_FETCH_TIMEOUT, 2, 60
@@ -286,7 +295,7 @@ class ZssmExplain(Star):
                     timeout_sec=timeout_sec,
                 )
             except TwitterParseError as exc:
-                return self._ReplyPlan(message=str(exc))
+                return self._build_error_reply_plan(str(exc))
             return self._LLMPlan(
                 user_prompt=twitter_ctx.prompt,
                 images=twitter_ctx.images,
@@ -301,7 +310,7 @@ class ZssmExplain(Star):
                     timeout_sec=timeout_sec,
                 )
             except ZhihuParseError as exc:
-                return self._ReplyPlan(message=str(exc))
+                return self._build_error_reply_plan(str(exc))
             cleanup_paths = [
                 item for item in zhihu_ctx.images if isinstance(item, str) and os.path.isabs(item)
             ]
@@ -329,8 +338,8 @@ class ZssmExplain(Star):
             user_prompt_template=DEFAULT_URL_USER_PROMPT,
         )
         if not url_ctx:
-            return self._ReplyPlan(
-                message=build_url_failure_message(self._last_fetch_info, cf_enable)
+            return self._build_error_reply_plan(
+                build_url_failure_message(self._last_fetch_info, cf_enable)
             )
 
         user_prompt, _text, images = url_ctx
@@ -362,9 +371,10 @@ class ZssmExplain(Star):
             logger.error("zssm_explain: get provider failed: %s", exc)
             provider = None
         if not provider:
-            yield self._reply_text_result(
-                event, "未检测到可用的大语言模型提供商，请先在 AstrBot 配置中启用。"
-            )
+            if not self._should_suppress_errors():
+                yield self._reply_text_result(
+                    event, "未检测到可用的大语言模型提供商，请先在 AstrBot 配置中启用。"
+                )
             return
 
         system_prompt = await self._build_system_prompt(event)
@@ -392,6 +402,8 @@ class ZssmExplain(Star):
                 reply_text = self._llm.pick_llm_text(llm_resp)
             access_wall_message = self._extract_access_wall_message(reply_text)
             if access_wall_message:
+                if self._should_suppress_errors():
+                    return
                 reply_text = access_wall_message
             elapsed = time.perf_counter() - start_ts
             yield self._reply_text_result(
@@ -402,12 +414,14 @@ class ZssmExplain(Star):
             except Exception:
                 pass
         except asyncio.TimeoutError:
-            yield self._reply_text_result(
-                event, "解释超时，请稍后重试或换一个模型提供商。"
-            )
+            if not self._should_suppress_errors():
+                yield self._reply_text_result(
+                    event, "解释超时，请稍后重试或换一个模型提供商。"
+                )
         except Exception as exc:
             logger.error("zssm_explain: LLM call failed: %s", exc)
-            yield self._reply_text_result(event, self._format_llm_error(exc, "解释"))
+            if not self._should_suppress_errors():
+                yield self._reply_text_result(event, self._format_llm_error(exc, "解释"))
 
     async def zssm(self, event: AstrMessageEvent):
         cleanup_paths: List[str] = []
@@ -431,13 +445,14 @@ class ZssmExplain(Star):
                 yield item
         except Exception as exc:
             logger.error("zssm_explain: handler crashed: %s", exc)
-            yield self._reply_text_result(
-                event, "解释失败：插件内部异常，请稍后再试或联系管理员。"
-            )
-            try:
-                event.stop_event()
-            except Exception:
-                pass
+            if not self._should_suppress_errors():
+                yield self._reply_text_result(
+                    event, "解释失败：插件内部异常，请稍后再试或联系管理员。"
+                )
+                try:
+                    event.stop_event()
+                except Exception:
+                    pass
         finally:
             for path in cleanup_paths:
                 try:
