@@ -79,8 +79,6 @@ async def fetch_html(
         via: str = "",
         error: Optional[str] = None,
         final_url: Optional[str] = None,
-        blocked: bool = False,
-        block_reason: Optional[str] = None,
     ):
         headers = headers or {}
         server = str(headers.get("server", "")).lower()
@@ -108,39 +106,8 @@ async def fetch_html(
                 "via": via,
                 "error": error,
                 "final_url": final_url or url,
-                "blocked": bool(blocked),
-                "block_reason": block_reason or "",
             }
         )
-
-    def _detect_access_block(final_url: Optional[str], text_hint: Optional[str]) -> Optional[str]:
-        final_url = str(final_url or "").lower()
-        text_hint = str(text_hint or "").lower()
-        combined = f"{final_url}\n{text_hint}"
-
-        patterns = (
-            ("login", ("login", "log in", "sign in", "signin", "登录", "登陆")),
-            ("captcha", ("captcha", "验证码", "verify you are human", "human verification")),
-            (
-                "access_denied",
-                (
-                    "access denied",
-                    "forbidden",
-                    "permission denied",
-                    "please enable cookies",
-                    "unauthorized",
-                    "无权访问",
-                    "访问受限",
-                    "请先登录",
-                    "需要登录",
-                    "登录后查看",
-                ),
-            ),
-        )
-        for reason, needles in patterns:
-            if any(needle in combined for needle in needles):
-                return reason
-        return None
 
     async def _aiohttp_fetch() -> Optional[str]:
         if aiohttp is None:
@@ -159,18 +126,6 @@ async def fetch_html(
                     final_url = str(resp.url)
                     if 200 <= status < 400:
                         text = await resp.text()
-                        blocked_reason = _detect_access_block(final_url, text[:4096])
-                        if blocked_reason:
-                            _mark(
-                                status=status,
-                                headers=hdrs,
-                                text_hint=text[:512],
-                                via="aiohttp",
-                                final_url=final_url,
-                                blocked=True,
-                                block_reason=blocked_reason,
-                            )
-                            return None
                         _mark(
                             status=status,
                             headers=hdrs,
@@ -212,18 +167,6 @@ async def fetch_html(
                     final_url = resp.geturl() if hasattr(resp, "geturl") else url
                     try:
                         text = data.decode(enc, errors="replace")
-                        blocked_reason = _detect_access_block(final_url, text[:4096])
-                        if blocked_reason:
-                            _mark(
-                                status=getattr(resp, "status", 200),
-                                headers=dict(resp.headers),
-                                text_hint=text[:512],
-                                via="urllib",
-                                final_url=final_url,
-                                blocked=True,
-                                block_reason=blocked_reason,
-                            )
-                            return None
                         _mark(
                             status=getattr(resp, "status", 200),
                             headers=dict(resp.headers),
@@ -234,18 +177,6 @@ async def fetch_html(
                         return text
                     except Exception:
                         text = data.decode("utf-8", errors="replace")
-                        blocked_reason = _detect_access_block(final_url, text[:4096])
-                        if blocked_reason:
-                            _mark(
-                                status=getattr(resp, "status", 200),
-                                headers=dict(resp.headers),
-                                text_hint=text[:512],
-                                via="urllib",
-                                final_url=final_url,
-                                blocked=True,
-                                block_reason=blocked_reason,
-                            )
-                            return None
                         _mark(
                             status=getattr(resp, "status", 200),
                             headers=dict(resp.headers),
@@ -364,13 +295,6 @@ def build_url_failure_message(last_fetch_info: Dict[str, Any]) -> str:
         if info.get("wechat_captcha"):
             return "微信公众号页面触发验证码，当前无法自动抓取，请稍后重试或更换网络后再试。"
         return "微信公众号文章抓取失败，请确认链接可访问并稍后重试。"
-    if info.get("blocked"):
-        reason = str(info.get("block_reason") or "").strip().lower()
-        if reason == "login":
-            return "目标页面需要登录，当前不会对登录页内容进行总结。"
-        if reason == "captcha":
-            return "目标页面触发了验证或验证码，当前不会对验证页内容进行总结。"
-        return "目标页面访问受限，当前不会对受限页面内容进行总结。"
     if info.get("cloudflare"):
         return "目标站点启用 Cloudflare 防护，当前无法抓取该页面。"
     return "网页获取失败或不受支持，请稍后重试并确认链接可访问。"

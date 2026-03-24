@@ -38,6 +38,12 @@
     "default": false,
     "hint": "开启后，抓取失败、解析失败、访问受限或模型异常时不返回错误提示"
   },
+  "intercept_access_wall": {
+    "description": "拦截访问墙页面",
+    "type": "bool",
+    "default": true,
+    "hint": "开启后，模型识别到登录页、验证码页或访问受限页时，不返回页面总结；关闭后则返回该页面当前可见内容的总结"
+  },
   "llm_timeout_sec": {
     "description": "LLM 调用超时时间（秒）",
     "type": "int",

@@ -16,7 +16,7 @@ from astrbot.core.pipeline.context_utils import call_event_hook
 from astrbot.core.star.star_handler import EventType
 
 from .llm_client import LLMClient
-from .prompt_utils import DEFAULT_URL_USER_PROMPT, build_system_prompt_for_event
+from .prompt_utils import build_system_prompt_for_event, build_url_user_prompt_template
 from .twitter_utils import TwitterParseError, is_twitter_url, prepare_twitter_prompt
 from .url_utils import build_url_failure_message, extract_urls_from_text, prepare_url_prompt
 from .zhihu_utils import ZhihuParseError, match_zhihu_url, prepare_zhihu_prompt
@@ -29,6 +29,7 @@ GROUP_LIST_KEY = "group_list"
 KEEP_ORIGINAL_PERSONA_KEY = "keep_original_persona"
 ZHIHU_COOKIE_KEY = "zhihu_cookie"
 URL_DOMAIN_BLACKLIST_KEY = "url_domain_blacklist"
+INTERCEPT_ACCESS_WALL_KEY = "intercept_access_wall"
 
 DEFAULT_URL_FETCH_TIMEOUT = 20
 DEFAULT_URL_MAX_CHARS = 6000
@@ -209,7 +210,11 @@ class ZssmExplain(Star):
     def _should_suppress_errors(self) -> bool:
         return self._get_conf_bool(SILENT_FAIL_KEY, False)
 
+    def _should_intercept_access_wall(self) -> bool:
+        return self._get_conf_bool(INTERCEPT_ACCESS_WALL_KEY, True)
+
     def _build_error_reply_plan(self, message: str) -> "_ReplyPlan":
+        logger.warning("zssm_explain: explain plan failed: %s", message)
         if self._should_suppress_errors():
             return self._ReplyPlan(message="", stop_event=False)
         return self._ReplyPlan(message=message, stop_event=True)
@@ -310,7 +315,9 @@ class ZssmExplain(Star):
             timeout_sec,
             self._last_fetch_info,
             max_chars=max_chars,
-            user_prompt_template=DEFAULT_URL_USER_PROMPT,
+            user_prompt_template=build_url_user_prompt_template(
+                intercept_access_wall=self._should_intercept_access_wall()
+            ),
         )
         if not url_ctx:
             return self._build_error_reply_plan(
@@ -346,10 +353,13 @@ class ZssmExplain(Star):
             logger.error("zssm_explain: get provider failed: %s", exc)
             provider = None
         if not provider:
+            logger.warning("zssm_explain: no provider available for current request")
             if not self._should_suppress_errors():
                 yield self._reply_text_result(
                     event, "未检测到可用的大语言模型提供商，请先在 AstrBot 配置中启用。"
                 )
+            else:
+                logger.warning("zssm_explain: reply suppressed because silent_fail is enabled")
             return
 
         system_prompt = await self._build_system_prompt(event)
@@ -375,9 +385,24 @@ class ZssmExplain(Star):
             reply_text = getattr(llm_resp, "completion_text", None)
             if not isinstance(reply_text, str) or not reply_text.strip():
                 reply_text = self._llm.pick_llm_text(llm_resp)
-            access_wall_message = self._extract_access_wall_message(reply_text)
+            access_wall_message = (
+                self._extract_access_wall_message(reply_text)
+                if self._should_intercept_access_wall()
+                else None
+            )
             if access_wall_message:
+                logger.warning(
+                    "zssm_explain: model detected access wall, suppress=%s",
+                    self._should_suppress_errors(),
+                )
                 if self._should_suppress_errors():
+                    logger.warning(
+                        "zssm_explain: access wall reply suppressed because silent_fail is enabled"
+                    )
+                    logger.warning(
+                        "zssm_explain: suppressed access wall raw model output:\n%s",
+                        str(reply_text or "").strip(),
+                    )
                     return
                 reply_text = access_wall_message
             elapsed = time.perf_counter() - start_ts
@@ -389,14 +414,19 @@ class ZssmExplain(Star):
             except Exception:
                 pass
         except asyncio.TimeoutError:
+            logger.warning("zssm_explain: llm call timed out")
             if not self._should_suppress_errors():
                 yield self._reply_text_result(
                     event, "解释超时，请稍后重试或换一个模型提供商。"
                 )
+            else:
+                logger.warning("zssm_explain: timeout reply suppressed because silent_fail is enabled")
         except Exception as exc:
             logger.error("zssm_explain: LLM call failed: %s", exc)
             if not self._should_suppress_errors():
                 yield self._reply_text_result(event, self._format_llm_error(exc, "解释"))
+            else:
+                logger.warning("zssm_explain: LLM failure reply suppressed because silent_fail is enabled")
 
     async def zssm(self, event: AstrMessageEvent):
         cleanup_paths: List[str] = []
@@ -428,6 +458,8 @@ class ZssmExplain(Star):
                     event.stop_event()
                 except Exception:
                     pass
+            else:
+                logger.warning("zssm_explain: handler failure reply suppressed because silent_fail is enabled")
         finally:
             for path in cleanup_paths:
                 try:
