@@ -55,10 +55,10 @@ def is_twitter_url(url: str) -> bool:
 def match_twitter_url(url: str) -> Optional[TwitterMatch]:
     if not isinstance(url, str):
         return None
-    m = _TWEET_PATTERN.match(url.strip())
-    if not m:
+    matched = _TWEET_PATTERN.match(url.strip())
+    if not matched:
         return None
-    return TwitterMatch(username=m.group(1), tweet_id=m.group(2), url=url.strip())
+    return TwitterMatch(username=matched.group(1), tweet_id=matched.group(2), url=url.strip())
 
 
 async def _fetch_fxtwitter_json(
@@ -111,8 +111,7 @@ async def _fetch_fxtwitter_json(
 
 
 def _build_twitter_context(match: TwitterMatch, data: Dict[str, Any]) -> TwitterContext:
-    code = data.get("code")
-    if code != 200:
+    if data.get("code") != 200:
         message = data.get("message", "")
         raise TwitterParseError(f"Twitter 推文获取失败：{message or '未知错误'}")
 
@@ -134,10 +133,10 @@ def _build_twitter_context(match: TwitterMatch, data: Dict[str, Any]) -> Twitter
     quote = tweet.get("quote")
     if isinstance(quote, dict):
         quote_text = str(quote.get("text") or "").strip()
-        q_author = quote.get("author") or {}
-        if isinstance(q_author, dict):
-            q_name = str(q_author.get("name") or "").strip()
-            q_screen = str(q_author.get("screen_name") or "").strip()
+        quote_author_info = quote.get("author") or {}
+        if isinstance(quote_author_info, dict):
+            q_name = str(quote_author_info.get("name") or "").strip()
+            q_screen = str(quote_author_info.get("screen_name") or "").strip()
             if q_name or q_screen:
                 quote_author = f"@{q_screen}" if q_screen else q_name
 
@@ -159,15 +158,14 @@ def _build_twitter_context(match: TwitterMatch, data: Dict[str, Any]) -> Twitter
 
 
 def build_twitter_prompt(ctx: TwitterContext) -> str:
-    parts = [
-        "请解释以下 Twitter 推文的内容：",
-        f"链接：{ctx.url}",
-    ]
+    parts = ["请解释以下 Twitter 推文的内容：", f"链接：{ctx.url}"]
     if ctx.author_name or ctx.author_screen_name:
-        author_str = ctx.author_name
+        author_text = ctx.author_name
         if ctx.author_screen_name:
-            author_str += f" (@{ctx.author_screen_name})" if ctx.author_name else f"@{ctx.author_screen_name}"
-        parts.append(f"作者：{author_str}")
+            author_text += (
+                f" (@{ctx.author_screen_name})" if ctx.author_name else f"@{ctx.author_screen_name}"
+            )
+        parts.append(f"作者：{author_text}")
     if ctx.created_at:
         parts.append(f"发布时间：{ctx.created_at}")
 
@@ -186,11 +184,10 @@ def build_twitter_prompt(ctx: TwitterContext) -> str:
     if ctx.text:
         parts.append(f"推文内容：\n{ctx.text}")
     if ctx.quote_text:
-        quote_label = f"引用推文（{ctx.quote_author}）：" if ctx.quote_author else "引用推文："
-        parts.append(f"{quote_label}\n{ctx.quote_text}")
+        label = f"引用推文（{ctx.quote_author}）：" if ctx.quote_author else "引用推文："
+        parts.append(f"{label}\n{ctx.quote_text}")
     if ctx.photos:
         parts.append(f"附图数量：{len(ctx.photos)}")
-
     return "\n\n".join(part for part in parts if part).strip()
 
 
@@ -209,9 +206,7 @@ async def prepare_twitter_prompt(
     if matched is None:
         raise TwitterParseError("未识别到受支持的 Twitter 推文链接。")
 
-    data = await _fetch_fxtwitter_json(
-        matched.username, matched.tweet_id, timeout_sec
-    )
+    data = await _fetch_fxtwitter_json(matched.username, matched.tweet_id, timeout_sec)
     ctx = _build_twitter_context(matched, data)
     return TwitterPreparedPrompt(
         prompt=build_twitter_prompt(ctx),
