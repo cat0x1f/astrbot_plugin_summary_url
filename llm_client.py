@@ -307,14 +307,18 @@ class LLMClient:
         - "dashscope": 使用 DashScope MultiModalConversation SDK
         - "base64": Base64 编码后通过 OpenAI 兼容接口发送
         """
-        from .video_utils import get_video_size_mb
+        def _get_video_size_mb(path: str) -> float:
+            try:
+                return float(os.path.getsize(path)) / (1024.0 * 1024.0)
+            except Exception:
+                return 0.0
 
         loop = asyncio.get_running_loop()
         timeout = max(30, min(600, int(timeout)))
         fps = max(1, min(30, int(fps)))
 
         if mode == "dashscope":
-            size_mb = get_video_size_mb(video_path)
+            size_mb = _get_video_size_mb(video_path)
             if size_mb <= 0:
                 raise ValueError(f"invalid video file: {video_path}")
             if size_mb <= 100:
@@ -371,7 +375,7 @@ class LLMClient:
             )
 
         elif mode == "base64":
-            size_mb = get_video_size_mb(video_path)
+            size_mb = _get_video_size_mb(video_path)
             if size_mb <= 0:
                 raise ValueError(f"invalid video file: {video_path}")
             with open(video_path, "rb") as f:

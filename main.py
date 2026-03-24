@@ -16,13 +16,6 @@ from astrbot.api.star import Context, Star
 from astrbot.core.pipeline.context_utils import call_event_hook
 from astrbot.core.star.star_handler import EventType
 
-from .bilibili_utils import (
-    download_bilibili_video_to_temp,
-    get_bilibili_url_type,
-    is_bilibili_url,
-    resolve_bilibili_content,
-    resolve_bilibili_short_url,
-)
 from .file_preview_utils import (
     build_text_exts_from_config,
     extract_file_preview_from_reply,
@@ -36,37 +29,14 @@ from .message_utils import (
     ob_data,
 )
 from .prompt_utils import (
-    DEFAULT_FRAME_CAPTION_PROMPT,
     DEFAULT_URL_USER_PROMPT,
-    DEFAULT_VIDEO_USER_PROMPT,
     build_system_prompt_for_event,
-    build_user_prompt,
 )
 from .url_utils import (
-    build_url_brief_for_forward,
     build_url_failure_message,
     extract_urls_from_text,
-    fetch_html,
     prepare_url_prompt,
 )
-from .video_utils import (
-    compress_video_to_target,
-    download_video_to_temp,
-    extract_audio_wav,
-    extract_forward_video_keyframes,
-    extract_videos_from_chain,
-    get_video_size_mb,
-    is_abs_file,
-    is_http_url,
-    is_safe_video_path,
-    napcat_resolve_file_url,
-    probe_duration_sec,
-    resolve_ffmpeg,
-    resolve_ffprobe,
-    sample_frames_equidistant,
-    sample_frames_with_ffmpeg,
-)
-from .twitter_utils import TwitterParseError, is_twitter_url, prepare_twitter_prompt
 from .zhihu_utils import ZhihuParseError, match_zhihu_url, prepare_zhihu_prompt
 
 """
@@ -103,7 +73,6 @@ VIDEO_DIRECT_MODE_KEY = "video_direct_mode"
 VIDEO_DIRECT_FPS_KEY = "video_direct_fps"
 VIDEO_DIRECT_TARGET_SIZE_MB_KEY = "video_direct_target_size_mb"
 VIDEO_DIRECT_TIMEOUT_SEC_KEY = "video_direct_timeout_sec"
-BILIBILI_COOKIE_KEY = "bilibili_cookie"
 ZHIHU_COOKIE_KEY = "zhihu_cookie"
 URL_DOMAIN_BLACKLIST_KEY = "url_domain_blacklist"
 
@@ -202,27 +171,6 @@ class ZssmExplain(Star):
         except Exception:
             pass
         return default
-
-    def _get_bilibili_cookie(self) -> Optional[str]:
-        """从配置中获取 B 站 Cookie 字符串。
-
-        配置格式为 object: {"SESSDATA": "xxx", "bili_jct": "xxx"}
-        返回格式为 "SESSDATA=xxx; bili_jct=xxx"，若未配置则返回 None。
-        """
-        try:
-            cookie_cfg = self.config.get(BILIBILI_COOKIE_KEY)
-            if not isinstance(cookie_cfg, dict):
-                return None
-            sessdata = cookie_cfg.get("SESSDATA", "").strip()
-            bili_jct = cookie_cfg.get("bili_jct", "").strip()
-            if not sessdata:
-                return None
-            parts = [f"SESSDATA={sessdata}"]
-            if bili_jct:
-                parts.append(f"bili_jct={bili_jct}")
-            return "; ".join(parts)
-        except Exception:
-            return None
 
     def _get_conf_list_str(self, key: str) -> List[str]:
         try:
@@ -471,188 +419,6 @@ class ZssmExplain(Star):
         except Exception:
             return None
 
-    # -------------------------------------------------------------------------
-    # B站图文/动态/直播解释（非视频内容）
-    # -------------------------------------------------------------------------
-
-    async def _explain_bilibili(
-        self,
-        event: AstrMessageEvent,
-        bili_url: str,
-        bili_type: str,
-    ):
-        """解释 B 站非视频内容（动态/直播/专栏/图文），将图片发给模型。"""
-        logger.info(
-            "zssm_explain: bilibili content type=%s url=%s",
-            bili_type,
-            bili_url[:100] if bili_url else "",
-        )
-
-        type_name_map = {
-            "dynamic": "动态",
-            "live": "直播",
-            "read": "专栏",
-            "opus": "图文",
-        }
-        type_name = type_name_map.get(bili_type, "内容")
-
-        # 获取 B 站 Cookie
-        bili_cookie = self._get_bilibili_cookie()
-
-        # 解析 B 站内容
-        try:
-            content = await resolve_bilibili_content(bili_url, cookie=bili_cookie)
-        except Exception as e:
-            logger.warning("zssm_explain: bilibili resolve failed: %s", e)
-            content = None
-
-        # API 解析失败时，回退到网页截图方式
-        if not content:
-            # 根据是否配置了 Cookie 给出不同提示
-            if not bili_cookie:
-                logger.info(
-                    "zssm_explain: bilibili API failed (no cookie), fallback to screenshot"
-                )
-            else:
-                logger.info(
-                    "zssm_explain: bilibili API failed (with cookie), fallback to screenshot"
-                )
-            timeout_sec = self._get_conf_int(
-                URL_FETCH_TIMEOUT_KEY, DEFAULT_URL_FETCH_TIMEOUT, 2, 60
-            )
-            max_chars = self._get_conf_int(
-                URL_MAX_CHARS_KEY, DEFAULT_URL_MAX_CHARS, min_v=1000, max_v=50000
-            )
-            cf_enable = self._get_conf_bool(
-                CF_SCREENSHOT_ENABLE_KEY, DEFAULT_CF_SCREENSHOT_ENABLE
-            )
-            width, height = self._get_cf_screenshot_size()
-            url_ctx = await prepare_url_prompt(
-                bili_url,
-                timeout_sec,
-                self._last_fetch_info,
-                max_chars=max_chars,
-                cf_screenshot_enable=cf_enable,
-                cf_screenshot_width=width,
-                cf_screenshot_height=height,
-                file_preview_max_bytes=self._get_file_preview_max_bytes(),
-                user_prompt_template=f"请解释以下 B 站{type_name}的内容：\n{{text}}",
-            )
-            if url_ctx:
-                user_prompt, _text, images = url_ctx
-                # 获取 provider
-                try:
-                    provider = self.context.get_using_provider(
-                        umo=event.unified_msg_origin
-                    )
-                except Exception as e:
-                    logger.error(f"zssm_explain: get provider failed: {e}")
-                    provider = None
-
-                if not provider:
-                    yield self._reply_text_result(
-                        event,
-                        "未检测到可用的大语言模型提供商，请先在 AstrBot 配置中启用。",
-                    )
-                    return
-
-                image_urls = self._llm.filter_supported_images(images)
-                system_prompt = await self._build_system_prompt(event)
-
-                try:
-                    start_ts = time.perf_counter()
-                    call_provider = self._llm.select_primary_provider(
-                        session_provider=provider, image_urls=image_urls
-                    )
-                    llm_resp = await self._llm.call_with_fallback(
-                        primary=call_provider,
-                        session_provider=provider,
-                        user_prompt=user_prompt,
-                        system_prompt=system_prompt,
-                        image_urls=image_urls,
-                    )
-                    reply_text = self._llm.pick_llm_text(llm_resp)
-                    elapsed = time.perf_counter() - start_ts
-                    reply_text = self._format_explain_output(
-                        reply_text, elapsed_sec=elapsed
-                    )
-                    yield self._reply_text_result(event, reply_text)
-                    return
-                except Exception as e:
-                    logger.error("zssm_explain: bilibili screenshot LLM failed: %s", e)
-
-            # 根据是否配置了 Cookie 给出不同的错误提示
-            if not bili_cookie:
-                yield self._reply_text_result(
-                    event,
-                    f"无法解析该 B 站{type_name}链接（API 风控需要 Cookie，请在插件配置中填写 B站 Cookie）。",
-                )
-            else:
-                yield self._reply_text_result(
-                    event,
-                    f"无法解析该 B 站{type_name}链接（API 解析失败，截图也失败了）。",
-                )
-            return
-
-        # 构建提示词
-        title = content.get("title") or ""
-        text = content.get("text") or ""
-        author = content.get("author") or ""
-        images = content.get("images") or []
-
-        prompt_parts = [f"请解释以下 B 站{type_name}的内容："]
-        if title:
-            prompt_parts.append(f"标题：{title}")
-        if author:
-            prompt_parts.append(f"作者：{author}")
-        if text:
-            prompt_parts.append(f"正文：\n{text[:2000]}")
-        if images:
-            prompt_parts.append(f"（附带 {len(images)} 张图片）")
-
-        user_prompt = "\n".join(prompt_parts)
-
-        # 获取 provider
-        try:
-            provider = self.context.get_using_provider(umo=event.unified_msg_origin)
-        except Exception as e:
-            logger.error(f"zssm_explain: get provider failed: {e}")
-            provider = None
-
-        if not provider:
-            yield self._reply_text_result(
-                event, "未检测到可用的大语言模型提供商，请先在 AstrBot 配置中启用。"
-            )
-            return
-
-        # 过滤支持的图片
-        image_urls = self._llm.filter_supported_images(images)
-        system_prompt = await self._build_system_prompt(event)
-
-        try:
-            start_ts = time.perf_counter()
-            call_provider = self._llm.select_primary_provider(
-                session_provider=provider, image_urls=image_urls
-            )
-            llm_resp = await self._llm.call_with_fallback(
-                primary=call_provider,
-                session_provider=provider,
-                user_prompt=user_prompt,
-                system_prompt=system_prompt,
-                image_urls=image_urls,
-            )
-
-            reply_text = self._llm.pick_llm_text(llm_resp)
-            elapsed = time.perf_counter() - start_ts
-            reply_text = self._format_explain_output(reply_text, elapsed_sec=elapsed)
-            yield self._reply_text_result(event, reply_text)
-
-        except Exception as e:
-            logger.error("zssm_explain: bilibili LLM call failed: %s", e)
-            yield self._reply_text_result(
-                event, self._format_llm_error(e, f"解释 B 站{type_name}")
-            )
-
     async def _explain_video(
         self,
         event: AstrMessageEvent,
@@ -695,26 +461,6 @@ class ZssmExplain(Star):
         )
         local_path = None
         src = video_src
-        # 优先特判 B 站视频链接：通过 video_utils 解析并下载到临时文件
-        if isinstance(src, str) and is_http_url(src) and is_bilibili_url(src):
-            try:
-                bili_local = await download_bilibili_video_to_temp(src, max_mb)
-            except ValueError as ve:
-                # 大小超限，给出明确提示
-                yield self._reply_text_result(event, str(ve))
-                return
-            except Exception as e:
-                logger.warning("zssm_explain: bilibili download failed: %s", e)
-                bili_local = None
-            if bili_local:
-                local_path = bili_local
-            else:
-                # B 站链接解析失败时直接给出友好提示，避免误将网页当作视频文件处理
-                yield self._reply_text_result(
-                    event,
-                    "暂时无法解析该 B 站视频链接，请确认视频为公开可访问状态，或改为发送视频文件/截图后再试。",
-                )
-                return
 
         # 若尚未得到本地路径，再按通用逻辑处理 Napcat/file_id 与普通 http 链接/本地路径
         if local_path is None:
@@ -1169,40 +915,21 @@ class ZssmExplain(Star):
     # 文本与图片解析等通用工具已迁移至 message_utils / llm_client / video_utils 模块
 
     def _is_zssm_trigger(self, text: str, is_command: bool = False) -> bool:
-        """统一触发检测逻辑。
-        is_command=True 表示带有前缀或 @Bot 的显式调用。
-        """
+        """统一触发检测逻辑（仅关键词，不支持命令前缀）。"""
         if not isinstance(text, str):
             return False
         t = text.strip()
-        kw_enabled = self._get_conf_bool(KEYWORD_ZSSM_ENABLE_KEY, True)
-
-        # 1. 关键词自动触发逻辑判定
-        # 检查是否有显式的指令前缀符号 (如 / ! . 等)
         prefix_match = re.match(r"^\s*([/!！。\.、，\-]+)", t)
         has_prefix = bool(prefix_match)
+        if has_prefix:
+            return False
 
-        if not kw_enabled:
-            # 如果关闭了关键词触发，则必须有显式的前缀符号才允许通过
-            if not has_prefix:
-                logger.debug(
-                    f"zssm_explain: blocked keyword trigger (kw_off, no_prefix): {t}"
-                )
-                return False
-
-        # 2. 正则匹配触发词
         keyword = self._match_trigger_keyword(t)
         if not keyword:
             logger.debug(f"zssm_explain: no trigger match: {t}")
             return False
 
-        logger.debug(
-            f"zssm_explain: trigger found: {keyword} (prefix={has_prefix}, is_command={is_command})"
-        )
-        # 仅允许 zssm 作为带前缀的命令触发；@Bot + 额外关键词仍按关键词触发处理。
-        if has_prefix and keyword != COMMAND_TRIGGER_KEYWORD:
-            return False
-
+        logger.debug(f"zssm_explain: keyword trigger found: {keyword}")
         return True
 
     def _match_trigger_keyword(self, text: str) -> Optional[str]:
@@ -1715,30 +1442,18 @@ class ZssmExplain(Star):
         video_meta: dict = field(default_factory=dict)
 
     @dataclass
-    class _BilibiliPlan:
-        """B站图文/动态/直播等非视频内容的解释计划。"""
-
-        bili_url: str
-        bili_type: str  # dynamic/live/read/opus
-        cleanup_paths: List[str] = field(default_factory=list)
-
-    @dataclass
     class _ReplyPlan:
         message: str
         stop_event: bool = True
         cleanup_paths: List[str] = field(default_factory=list)
 
-    _ExplainPlan = Union[_LLMPlan, _VideoPlan, _BilibiliPlan, _ReplyPlan]
+    _ExplainPlan = Union[_LLMPlan, _VideoPlan, _ReplyPlan]
 
     def _build_empty_input_reply_plan(
         self, cleanup_paths: Optional[List[str]] = None
     ) -> Optional[_ReplyPlan]:
-        if not self._get_conf_bool(
-            EMPTY_ZSSM_PROMPT_ENABLE_KEY, DEFAULT_EMPTY_ZSSM_PROMPT_ENABLE
-        ):
-            return None
         return self._ReplyPlan(
-            message="请输入要解释的内容。",
+            message="请发送要解释的链接。",
             stop_event=True,
             cleanup_paths=list(cleanup_paths or []),
         )
@@ -1750,382 +1465,77 @@ class ZssmExplain(Star):
         inline: str,
         enable_url: bool,
     ) -> Optional[_ExplainPlan]:
-        """将输入解析/拼装为一个可执行的解释计划（builder 阶段）。"""
+        """仅构建“链接图文解释”计划。"""
         cleanup_paths: List[str] = []
+        if not inline:
+            return self._build_empty_input_reply_plan(cleanup_paths)
 
-        if inline:
-            urls = extract_urls_from_text(inline) if enable_url else []
-            if urls:
-                target_url = urls[0]
-                if self._is_domain_blacklisted(target_url):
-                    logger.info(
-                        "zssm_explain: url blocked by domain blacklist: %s",
-                        target_url[:100],
-                    )
-                    return self._ReplyPlan(
-                        message="该链接的域名已被屏蔽，无法解析。",
-                        stop_event=True,
-                        cleanup_paths=cleanup_paths,
-                    )
-                if is_bilibili_url(target_url):
-                    # 短链先展开，再判断真实类型
-                    bili_type = get_bilibili_url_type(target_url)
-                    if bili_type == "short":
-                        target_url = await resolve_bilibili_short_url(target_url)
-                        bili_type = get_bilibili_url_type(target_url)
-                    # 视频类型走 VideoPlan
-                    if bili_type == "video" or bili_type is None:
-                        return self._VideoPlan(
-                            video_src=target_url, cleanup_paths=cleanup_paths
-                        )
-                    # 动态/直播/专栏/图文走 BilibiliPlan（图文发给模型）
-                    return self._BilibiliPlan(
-                        bili_url=target_url,
-                        bili_type=bili_type,
-                        cleanup_paths=cleanup_paths,
-                    )
+        urls = extract_urls_from_text(inline) if enable_url else []
+        if not urls:
+            return self._build_empty_input_reply_plan(cleanup_paths)
 
-                timeout_sec = self._get_conf_int(
-                    URL_FETCH_TIMEOUT_KEY, DEFAULT_URL_FETCH_TIMEOUT, 2, 60
-                )
-                if is_twitter_url(target_url):
-                    try:
-                        twitter_ctx = await prepare_twitter_prompt(
-                            target_url,
-                            timeout_sec=timeout_sec,
-                        )
-                    except TwitterParseError as exc:
-                        return self._ReplyPlan(
-                            message=str(exc),
-                            stop_event=True,
-                            cleanup_paths=cleanup_paths,
-                        )
-                    return self._LLMPlan(
-                        user_prompt=twitter_ctx.prompt,
-                        images=twitter_ctx.images,
-                        cleanup_paths=cleanup_paths,
-                    )
-                if match_zhihu_url(target_url):
-                    try:
-                        zhihu_ctx = await prepare_zhihu_prompt(
-                            target_url,
-                            cookie=self._get_conf_str(ZHIHU_COOKIE_KEY, ""),
-                            timeout_sec=timeout_sec,
-                        )
-                    except ZhihuParseError as exc:
-                        return self._ReplyPlan(
-                            message=str(exc),
-                            stop_event=True,
-                            cleanup_paths=cleanup_paths,
-                        )
-                    return self._LLMPlan(
-                        user_prompt=zhihu_ctx.prompt,
-                        images=zhihu_ctx.images,
-                        cleanup_paths=cleanup_paths,
-                    )
-                max_chars = self._get_conf_int(
-                    URL_MAX_CHARS_KEY,
-                    DEFAULT_URL_MAX_CHARS,
-                    min_v=1000,
-                    max_v=50000,
-                )
-                cf_enable = self._get_conf_bool(
-                    CF_SCREENSHOT_ENABLE_KEY, DEFAULT_CF_SCREENSHOT_ENABLE
-                )
-                width, height = self._get_cf_screenshot_size()
-                url_ctx = await prepare_url_prompt(
-                    target_url,
-                    timeout_sec,
-                    self._last_fetch_info,
-                    max_chars=max_chars,
-                    cf_screenshot_enable=cf_enable,
-                    cf_screenshot_width=width,
-                    cf_screenshot_height=height,
-                    file_preview_max_bytes=self._get_file_preview_max_bytes(),
-                    user_prompt_template=DEFAULT_URL_USER_PROMPT,
-                )
-                if not url_ctx:
-                    return self._ReplyPlan(
-                        message=build_url_failure_message(
-                            self._last_fetch_info, cf_enable
-                        ),
-                        stop_event=True,
-                        cleanup_paths=cleanup_paths,
-                    )
-                user_prompt, _text, images = url_ctx
-                return self._LLMPlan(
-                    user_prompt=user_prompt, images=images, cleanup_paths=cleanup_paths
-                )
-
-            inline_images_raw = self._extract_images_from_event(event)
-            inline_images = (
-                await self._resolve_images_for_llm(event, inline_images_raw)
-                if inline_images_raw
-                else []
+        target_url = urls[0]
+        if self._is_domain_blacklisted(target_url):
+            logger.info(
+                "zssm_explain: url blocked by domain blacklist: %s",
+                target_url[:100],
             )
-            if inline_images_raw and not inline_images:
-                # 部分平台会把图片段转成占位文本（如 "[图片]"），此时如果图片解析失败就不要继续调用 LLM。
-                placeholder = str(inline or "").strip().lower()
-                if placeholder in ("[图片]", "[image]", "[img]") or not placeholder:
-                    return self._ReplyPlan(
-                        message="未能获取到图片（未拿到可访问的链接/本地路径/base64）。请尝试重新发送图片，或查看日志 `zssm_explain: image resolve failed` / `zssm_explain: napcat resolve file/url failed` 获取详细信息。",
-                        cleanup_paths=cleanup_paths,
-                    )
-            user_prompt = build_user_prompt(inline, inline_images)
-            return self._LLMPlan(
-                user_prompt=user_prompt,
-                images=inline_images,
+            return self._ReplyPlan(
+                message="该链接的域名已被屏蔽，无法解析。",
+                stop_event=True,
                 cleanup_paths=cleanup_paths,
             )
 
-        (
-            text,
-            images,
-            vids,
-            from_forward,
-            video_meta,
-        ) = await extract_quoted_payload_with_videos(event)
-        # 同时支持“zssm + 图片”（图片在当前消息里，而非被回复消息中）
-        try:
-            images.extend(self._extract_images_from_event(event))
-        except Exception:
-            pass
-        # 去重图片列表
-        if isinstance(images, list):
-            images = list(dict.fromkeys(images))
-
-        if vids and not from_forward:
-            vm = video_meta.get(0, {}) if video_meta else {}
-            return self._VideoPlan(
-                video_src=vids[0], cleanup_paths=cleanup_paths, video_meta=vm
-            )
-
-        if from_forward and vids:
+        timeout_sec = self._get_conf_int(
+            URL_FETCH_TIMEOUT_KEY, DEFAULT_URL_FETCH_TIMEOUT, 2, 60
+        )
+        if match_zhihu_url(target_url):
             try:
-                enabled = self._get_conf_bool(
-                    FORWARD_VIDEO_KEYFRAME_ENABLE_KEY,
-                    DEFAULT_FORWARD_VIDEO_KEYFRAME_ENABLE,
-                )
-                ffmpeg_path = self._resolve_ffmpeg()
-                ffprobe_path = self._resolve_ffprobe()
-                max_count = self._get_conf_int(
-                    FORWARD_VIDEO_MAX_COUNT_KEY,
-                    DEFAULT_FORWARD_VIDEO_MAX_COUNT,
-                    0,
-                    10,
-                )
-                max_mb = self._get_conf_int(
-                    VIDEO_MAX_SIZE_MB_KEY, DEFAULT_VIDEO_MAX_SIZE_MB, 1, 512
-                )
-                max_sec = self._get_conf_int(
-                    VIDEO_MAX_DURATION_SEC_KEY,
-                    DEFAULT_VIDEO_MAX_DURATION_SEC,
-                    10,
-                    3600,
-                )
-                timeout_sec = self._get_conf_int(
-                    URL_FETCH_TIMEOUT_KEY, DEFAULT_URL_FETCH_TIMEOUT, 2, 60
-                )
-                f_frames, f_cleanup = await extract_forward_video_keyframes(
-                    event,
-                    vids,
-                    enabled=enabled,
-                    max_count=max_count,
-                    ffmpeg_path=ffmpeg_path,
-                    ffprobe_path=ffprobe_path,
-                    max_mb=max_mb,
-                    max_sec=max_sec,
+                zhihu_ctx = await prepare_zhihu_prompt(
+                    target_url,
+                    cookie=self._get_conf_str(ZHIHU_COOKIE_KEY, ""),
                     timeout_sec=timeout_sec,
-                    video_meta=video_meta,
                 )
-                if f_frames:
-                    images.extend(f_frames)
-                    cleanup_paths.extend(f_cleanup)
-                    note = (
-                        f"（聊天记录包含 {len(vids)} 个视频，已抽取部分关键帧辅助解释）"
-                    )
-                    if isinstance(text, str) and text.strip():
-                        text = f"{text}\n\n{note}"
-                    else:
-                        text = note
-            except Exception as e:
-                logger.warning("zssm_explain: forward video keyframe failed: %s", e)
-
-        if (not vids) and (not from_forward) and (not text) and (not images):
-            try:
-                chain_now = event.get_messages()
-            except Exception:
-                chain_now = getattr(event.message_obj, "message", []) or []
-            try:
-                vids_now = extract_videos_from_chain(chain_now)
-            except Exception:
-                vids_now = []
-            if vids_now:
-                return self._VideoPlan(
-                    video_src=vids_now[0], cleanup_paths=cleanup_paths
-                )
-
-        try:
-            file_preview = await extract_file_preview_from_reply(
-                event,
-                text_exts=self._get_file_preview_exts(),
-                max_size_bytes=self._get_file_preview_max_bytes(),
-            )
-        except Exception:
-            file_preview = None
-        if file_preview:
-            if text:
-                text = f"{file_preview}\n\n{text}"
-            else:
-                text = file_preview
-
-        raw_images = list(images) if isinstance(images, list) else []
-        try:
-            images = await self._resolve_images_for_llm(event, images)
-        except Exception:
-            images = []
-        # Deduplicate resolved images
-        if isinstance(images, list):
-            images = list(dict.fromkeys(images))
-
-        if not text and not images:
-            if raw_images:
+            except ZhihuParseError as exc:
                 return self._ReplyPlan(
-                    message="未能获取到图片（未拿到可访问的链接/本地路径/base64），请尝试重新发送图片，或查看日志 `zssm_explain: image resolve failed` / `zssm_explain: napcat resolve file/url failed` 排查 OneBot/Napcat 是否能返回图片 URL（可检查 get_msg/get_image/get_file）。",
+                    message=str(exc),
                     stop_event=True,
                     cleanup_paths=cleanup_paths,
                 )
-            return self._build_empty_input_reply_plan(cleanup_paths)
-
-        urls = extract_urls_from_text(text) if (enable_url and text) else []
-        if urls and self._is_domain_blacklisted(urls[0]):
-            logger.info(
-                "zssm_explain: url blocked by domain blacklist: %s",
-                urls[0][:100],
-            )
-            urls = []
-        if urls and not from_forward:
-            target_url = urls[0]
-            if is_bilibili_url(target_url):
-                # 短链先展开，再判断真实类型
-                bili_type = get_bilibili_url_type(target_url)
-                if bili_type == "short":
-                    target_url = await resolve_bilibili_short_url(target_url)
-                    bili_type = get_bilibili_url_type(target_url)
-                # 视频类型走 VideoPlan
-                if bili_type == "video" or bili_type is None:
-                    return self._VideoPlan(
-                        video_src=target_url, cleanup_paths=cleanup_paths
-                    )
-                return self._BilibiliPlan(
-                    bili_url=target_url,
-                    bili_type=bili_type,
-                    cleanup_paths=cleanup_paths,
-                )
-
-            timeout_sec = self._get_conf_int(
-                URL_FETCH_TIMEOUT_KEY, DEFAULT_URL_FETCH_TIMEOUT, 2, 60
-            )
-            if is_twitter_url(target_url):
-                try:
-                    twitter_ctx = await prepare_twitter_prompt(
-                        target_url,
-                        timeout_sec=timeout_sec,
-                    )
-                except TwitterParseError as exc:
-                    return self._ReplyPlan(
-                        message=str(exc),
-                        stop_event=True,
-                        cleanup_paths=cleanup_paths,
-                    )
-                return self._LLMPlan(
-                    user_prompt=twitter_ctx.prompt,
-                    images=twitter_ctx.images,
-                    cleanup_paths=cleanup_paths,
-                )
-            if match_zhihu_url(target_url):
-                try:
-                    zhihu_ctx = await prepare_zhihu_prompt(
-                        target_url,
-                        cookie=self._get_conf_str(ZHIHU_COOKIE_KEY, ""),
-                        timeout_sec=timeout_sec,
-                    )
-                except ZhihuParseError as exc:
-                    return self._ReplyPlan(
-                        message=str(exc),
-                        stop_event=True,
-                        cleanup_paths=cleanup_paths,
-                    )
-                return self._LLMPlan(
-                    user_prompt=zhihu_ctx.prompt,
-                    images=zhihu_ctx.images,
-                    cleanup_paths=cleanup_paths,
-                )
-            max_chars = self._get_conf_int(
-                URL_MAX_CHARS_KEY,
-                DEFAULT_URL_MAX_CHARS,
-                min_v=1000,
-                max_v=50000,
-            )
-            cf_enable = self._get_conf_bool(
-                CF_SCREENSHOT_ENABLE_KEY, DEFAULT_CF_SCREENSHOT_ENABLE
-            )
-            width, height = self._get_cf_screenshot_size()
-            url_ctx = await prepare_url_prompt(
-                target_url,
-                timeout_sec,
-                self._last_fetch_info,
-                max_chars=max_chars,
-                cf_screenshot_enable=cf_enable,
-                cf_screenshot_width=width,
-                cf_screenshot_height=height,
-                file_preview_max_bytes=self._get_file_preview_max_bytes(),
-                user_prompt_template=DEFAULT_URL_USER_PROMPT,
-            )
-            if not url_ctx:
-                return self._ReplyPlan(
-                    message=build_url_failure_message(self._last_fetch_info, cf_enable),
-                    stop_event=True,
-                    cleanup_paths=cleanup_paths,
-                )
-            user_prompt, _text, images = url_ctx
             return self._LLMPlan(
-                user_prompt=user_prompt, images=images, cleanup_paths=cleanup_paths
+                user_prompt=zhihu_ctx.prompt,
+                images=zhihu_ctx.images,
+                cleanup_paths=cleanup_paths,
             )
 
-        if urls and from_forward:
-            base_prompt = build_user_prompt(text, images)
-            target_url = urls[0]
-            timeout_sec = self._get_conf_int(
-                URL_FETCH_TIMEOUT_KEY, DEFAULT_URL_FETCH_TIMEOUT, 2, 60
+        max_chars = self._get_conf_int(
+            URL_MAX_CHARS_KEY,
+            DEFAULT_URL_MAX_CHARS,
+            min_v=1000,
+            max_v=50000,
+        )
+        cf_enable = self._get_conf_bool(
+            CF_SCREENSHOT_ENABLE_KEY, DEFAULT_CF_SCREENSHOT_ENABLE
+        )
+        width, height = self._get_cf_screenshot_size()
+        url_ctx = await prepare_url_prompt(
+            target_url,
+            timeout_sec,
+            self._last_fetch_info,
+            max_chars=max_chars,
+            cf_screenshot_enable=cf_enable,
+            cf_screenshot_width=width,
+            cf_screenshot_height=height,
+            file_preview_max_bytes=self._get_file_preview_max_bytes(),
+            user_prompt_template=DEFAULT_URL_USER_PROMPT,
+        )
+        if not url_ctx:
+            return self._ReplyPlan(
+                message=build_url_failure_message(self._last_fetch_info, cf_enable),
+                stop_event=True,
+                cleanup_paths=cleanup_paths,
             )
-            extra_block = ""
-            try:
-                html = await fetch_html(target_url, timeout_sec, self._last_fetch_info)
-            except Exception:
-                html = None
-            if isinstance(html, str) and html.strip():
-                max_chars = self._get_conf_int(
-                    URL_MAX_CHARS_KEY,
-                    DEFAULT_URL_MAX_CHARS,
-                    min_v=1000,
-                    max_v=50000,
-                )
-                title, desc, snippet = build_url_brief_for_forward(html, max_chars)
-                extra_block = (
-                    "\n\n此外，这段聊天记录中包含一个网页链接，请结合下面的网页关键信息一起解释整段对话：\n"
-                    f"网址: {target_url}\n"
-                    f"标题: {title or '(未获取)'}\n"
-                    f"描述: {desc or '(未获取)'}\n"
-                    "正文片段:\n"
-                    f"{snippet}"
-                )
-            user_prompt = base_prompt + extra_block
-            return self._LLMPlan(
-                user_prompt=user_prompt, images=images, cleanup_paths=cleanup_paths
-            )
-
-        user_prompt = build_user_prompt(text, images)
+        user_prompt, _text, images = url_ctx
         return self._LLMPlan(
             user_prompt=user_prompt, images=images, cleanup_paths=cleanup_paths
         )
@@ -2133,15 +1543,9 @@ class ZssmExplain(Star):
     async def _execute_explain_plan(self, event: AstrMessageEvent, plan: _ExplainPlan):
         """执行解释计划（executor 阶段）。"""
         if isinstance(plan, self._VideoPlan):
-            async for r in self._explain_video(
-                event, plan.video_src, video_meta=plan.video_meta
-            ):
-                yield r
-            return
-
-        if isinstance(plan, self._BilibiliPlan):
-            async for r in self._explain_bilibili(event, plan.bili_url, plan.bili_type):
-                yield r
+            yield self._reply_text_result(
+                event, "当前模式已禁用视频解释，仅支持链接图文解释。"
+            )
             return
 
         if isinstance(plan, self._ReplyPlan):
@@ -2227,9 +1631,8 @@ class ZssmExplain(Star):
             except Exception:
                 pass
 
-    @filter.command("zssm")
     async def zssm(self, event: AstrMessageEvent):
-        """解释被回复消息：/zssm 或关键词触发；若携带内容则直接解释该内容，否则按回复消息逻辑。"""
+        """统一入口：仅支持“发送链接自动解释”。"""
         cleanup_paths: List[str] = []
         try:
             try:
@@ -2238,64 +1641,20 @@ class ZssmExplain(Star):
             except Exception:
                 pass
 
-            # 触发校验：确保开启了对应开关，且在关闭关键词触发时必须带有指令前缀
-            chain = self._safe_get_chain(event)
-            head_text = self._first_plain_head_text(chain)
-            # 如果首个文本没搜到，回退到整体字符串
-            check_text = head_text or (getattr(event, "message_str", "") or "")
-            trigger_keyword = self._match_trigger_keyword(check_text)
-            actual_command_like = False
             try:
-                text_for_check = check_text.strip()
-                has_prefix = bool(re.match(r"^\s*([/!！。\.、，\-]+)", text_for_check))
-                at_me = False
-                try:
-                    self_id = event.get_self_id()
-                    at_me = self._chain_has_at_me(chain, self_id)
-                except Exception:
-                    at_me = False
-                actual_command_like = has_prefix or (
-                    at_me and trigger_keyword == COMMAND_TRIGGER_KEYWORD
-                )
+                inline = event.get_message_str()
             except Exception:
-                actual_command_like = False
+                inline = getattr(event, "message_str", "") or ""
+            if not isinstance(inline, str):
+                inline = ""
+            inline = inline.strip()
 
-            if not self._is_zssm_trigger(check_text, is_command=actual_command_like):
-                logger.debug(
-                    f"zssm_explain: zssm command filter blocked execution. check_text: {check_text}"
-                )
-                return
-
-            inline = self._get_inline_content(event)
-            if self._should_defer_empty_heyiwei_trigger(
-                event,
-                trigger_keyword=trigger_keyword,
-                inline=inline,
-                chain=chain,
-            ):
-                reply_plan = self._build_empty_input_reply_plan()
-                if reply_plan is None:
-                    logger.debug(
-                        "zssm_explain: ignore empty heyiwei trigger without reply/payload"
-                    )
-                    return
-                event.should_call_llm(True)
-                if self._already_handled(event):
-                    return
-                async for r in self._execute_explain_plan(event, reply_plan):
-                    yield r
-                return
-
-            # 真正进入解释流程前再阻止默认 LLM 接管，避免空的 hyw/何意味 误拦截普通聊天
             event.should_call_llm(True)
             if self._already_handled(event):
                 return
-            enable_url = self._get_conf_bool(
-                URL_DETECT_ENABLE_KEY, DEFAULT_URL_DETECT_ENABLE
-            )
 
             plan = await self._build_explain_plan(
-                event, inline=inline, enable_url=enable_url
+                event, inline=inline, enable_url=True
             )
             if plan is None:
                 return
@@ -2334,65 +1693,20 @@ class ZssmExplain(Star):
 
     @filter.event_message_type(filter.EventMessageType.ALL)
     async def keyword_zssm(self, event: AstrMessageEvent):
-        """关键词触发：忽略常见前缀/Reply/At 等，检测首个 Plain 段的配置关键词。
-        避免与 /zssm 指令重复：若以 /zssm 开头则交由指令处理。
-        """
-        # 群聊权限控制：不满足条件则直接忽略
+        """自动链接触发：消息中出现 URL 时直接解释。"""
         try:
             if not self._is_group_allowed(event):
                 return
         except Exception:
             pass
-        # 优先使用消息链首个 Plain 段判断
-        try:
-            chain = event.get_messages()
-        except Exception:
-            chain = (
-                getattr(event.message_obj, "message", [])
-                if hasattr(event, "message_obj")
-                else []
-            )
-        head = self._first_plain_head_text(chain)
-        # 如果 @ 了 Bot 并且首个 Plain 文本是 zssm，则交由指令处理以避免重复
-        at_me = False
-        try:
-            self_id = event.get_self_id()
-            at_me = self._chain_has_at_me(chain, self_id)
-        except Exception:
-            at_me = False
-        if isinstance(head, str) and head.strip():
-            hs = head.strip()
-            if re.match(
-                rf"^\s*/\s*({re.escape(COMMAND_TRIGGER_KEYWORD)})(\s|$)",
-                hs,
-                re.I,
-            ):
-                return
-            if at_me and re.match(
-                rf"^({re.escape(COMMAND_TRIGGER_KEYWORD)})(\s|$)", hs, re.I
-            ):
-                return
-            if self._is_zssm_trigger(hs, is_command=at_me):
-                async for r in self.zssm(event):
-                    yield r
-                return
-        # 回退到纯文本串
+
         try:
             text = event.get_message_str()
         except Exception:
             text = getattr(event, "message_str", "") or ""
-        if isinstance(text, str) and text.strip():
-            t = text.strip()
-            if re.match(
-                rf"^\s*/\s*({re.escape(COMMAND_TRIGGER_KEYWORD)})(\s|$)",
-                t,
-                re.I,
-            ):
-                return
-            if at_me and re.match(
-                rf"^({re.escape(COMMAND_TRIGGER_KEYWORD)})(\s|$)", t, re.I
-            ):
-                return
-            if self._is_zssm_trigger(t, is_command=at_me):
-                async for r in self.zssm(event):
-                    yield r
+        if not isinstance(text, str) or not text.strip():
+            return
+        if not extract_urls_from_text(text):
+            return
+        async for r in self.zssm(event):
+            yield r

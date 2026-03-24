@@ -1,5 +1,5 @@
 name: astrbot_zssm_explain
-desc: hyw？发送zssm或hyw来让bot解释近乎全类型的消息！
+desc: 发送链接后自动返回网页图文解释，支持普通网页、微信文章和知乎。
 version: v4.5.0
 author: 薄暝
 repo: https://github.com/exynos967/astrbot_zssm_explain
