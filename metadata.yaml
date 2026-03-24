@@ -1,5 +1,5 @@
-name: astrbot_zssm_explain
+name: astrbot_plugin_summary_url
 desc: 发送链接后自动返回网页图文解释，支持普通网页、微信文章和知乎。
 version: v4.5.0
-author: 薄暝
-repo: https://github.com/exynos967/astrbot_zssm_explain
+author: 糊糊
+repo: https://github.com/cat0x1f/astrbot_plugin_summary_url
