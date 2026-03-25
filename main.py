@@ -16,6 +16,7 @@ from astrbot.core.pipeline.context_utils import call_event_hook
 from astrbot.core.star.star_handler import EventType
 
 from .llm_client import LLMClient
+from .bilibili_utils import BilibiliParseError, is_bilibili_url, prepare_bilibili_prompt
 from .prompt_utils import build_system_prompt_for_event, build_url_user_prompt_template
 from .coolapk_utils import is_coolapk_url, prepare_coolapk_prompt
 from .reddit_utils import RedditParseError, is_reddit_url, prepare_reddit_prompt
@@ -390,6 +391,21 @@ class ZssmExplain(Star):
                 images=zhihu_ctx.images,
                 cleanup_paths=cleanup_paths,
             )
+
+        if is_bilibili_url(target_url):
+            try:
+                bilibili_ctx = await prepare_bilibili_prompt(
+                    target_url,
+                    timeout_sec=timeout_sec,
+                )
+            except BilibiliParseError as exc:
+                return self._build_error_reply_plan(str(exc))
+            if bilibili_ctx is not None:
+                return self._LLMPlan(
+                    user_prompt=bilibili_ctx.prompt,
+                    images=[],
+                    cleanup_paths=[],
+                )
 
         max_chars = self._get_conf_int(
             URL_MAX_CHARS_KEY, DEFAULT_URL_MAX_CHARS, min_v=1000, max_v=50000
