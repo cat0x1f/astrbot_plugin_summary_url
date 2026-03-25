@@ -1,5 +1,5 @@
 name: astrbot_plugin_summary_url
 desc: 发送链接后自动返回网页图文解释，支持普通网页、微信文章、知乎、Twitter 和 Reddit。
-version: v4.6.0
+version: v4.7.0
 author: 糊糊
 repo: https://github.com/cat0x1f/astrbot_plugin_summary_url

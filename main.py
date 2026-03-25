@@ -31,11 +31,16 @@ KEEP_ORIGINAL_PERSONA_KEY = "keep_original_persona"
 ZHIHU_COOKIE_KEY = "zhihu_cookie"
 URL_DOMAIN_BLACKLIST_KEY = "url_domain_blacklist"
 INTERCEPT_ACCESS_WALL_KEY = "intercept_access_wall"
+DEDUP_ENABLED_KEY = "dedupe_processed_urls"
+DEDUP_LIMIT_KEY = "dedupe_processed_urls_limit"
 
 DEFAULT_URL_FETCH_TIMEOUT = 20
 DEFAULT_URL_MAX_CHARS = 6000
 DEFAULT_KEEP_ORIGINAL_PERSONA = True
+DEFAULT_DEDUP_ENABLED = True
+DEFAULT_DEDUP_LIMIT = 500
 ACCESS_WALL_SENTINEL = "[[ACCESS_WALL]]"
+PROCESSED_URLS_KV_KEY = "processed_urls"
 
 
 class ZssmExplain(Star):
@@ -219,6 +224,68 @@ class ZssmExplain(Star):
         if self._should_suppress_errors():
             return self._ReplyPlan(message="", stop_event=False)
         return self._ReplyPlan(message=message, stop_event=True)
+
+    def _should_dedupe_processed_urls(self) -> bool:
+        return self._get_conf_bool(DEDUP_ENABLED_KEY, DEFAULT_DEDUP_ENABLED)
+
+    def _get_dedupe_limit(self) -> int:
+        return self._get_conf_int(DEDUP_LIMIT_KEY, DEFAULT_DEDUP_LIMIT, 10, 50000)
+
+    async def _load_processed_urls(self) -> List[Dict[str, Any]]:
+        try:
+            payload = await self.get_kv_data(PROCESSED_URLS_KV_KEY, [])
+        except Exception:
+            return []
+
+        if not isinstance(payload, list):
+            return []
+
+        result: List[Dict[str, Any]] = []
+        for item in payload:
+            if not isinstance(item, dict):
+                continue
+            url = str(item.get("url") or "").strip()
+            ts = item.get("ts")
+            if not url:
+                continue
+            try:
+                ts_value = float(ts)
+            except Exception:
+                ts_value = 0.0
+            result.append({"url": url, "ts": ts_value})
+        return result
+
+    async def _save_processed_urls(self, items: List[Dict[str, Any]]) -> None:
+        try:
+            await self.put_kv_data(PROCESSED_URLS_KV_KEY, items)
+        except Exception as exc:
+            logger.warning("zssm_explain: failed to save processed urls: %s", exc)
+
+    async def _is_processed_url(self, url: str) -> bool:
+        if not self._should_dedupe_processed_urls():
+            return False
+        target = str(url or "").strip()
+        if not target:
+            return False
+        for item in await self._load_processed_urls():
+            if item.get("url") == target:
+                return True
+        return False
+
+    async def _mark_processed_url(self, url: str) -> None:
+        if not self._should_dedupe_processed_urls():
+            return
+        target = str(url or "").strip()
+        if not target:
+            return
+
+        items = [item for item in await self._load_processed_urls() if item.get("url") != target]
+        items.append({"url": target, "ts": time.time()})
+        items.sort(key=lambda item: float(item.get("ts") or 0))
+        limit = self._get_dedupe_limit()
+        if len(items) > limit:
+            items = items[-limit:]
+        await self._save_processed_urls(items)
 
     def _already_handled(self, event: AstrMessageEvent) -> bool:
         try:
@@ -429,6 +496,7 @@ class ZssmExplain(Star):
                 event.stop_event()
             except Exception:
                 pass
+            setattr(plan, "_completed", True)
         except asyncio.TimeoutError:
             logger.warning("zssm_explain: llm call timed out")
             if not self._should_suppress_errors():
@@ -446,6 +514,7 @@ class ZssmExplain(Star):
 
     async def zssm(self, event: AstrMessageEvent):
         cleanup_paths: List[str] = []
+        target_url = ""
         try:
             if not self._is_group_allowed(event):
                 return
@@ -456,6 +525,15 @@ class ZssmExplain(Star):
             if not isinstance(inline, str):
                 inline = ""
 
+            urls = extract_urls_from_text(inline)
+            target_url = urls[0] if urls else ""
+            if target_url and await self._is_processed_url(target_url):
+                logger.info(
+                    "zssm_explain: skip duplicated processed url: %s",
+                    target_url[:200],
+                )
+                return
+
             event.should_call_llm(True)
             if self._already_handled(event):
                 return
@@ -464,6 +542,8 @@ class ZssmExplain(Star):
             cleanup_paths = list(getattr(plan, "cleanup_paths", []) or [])
             async for item in self._execute_explain_plan(event, plan):
                 yield item
+            if target_url and getattr(plan, "_completed", False):
+                await self._mark_processed_url(target_url)
         except Exception as exc:
             logger.error("zssm_explain: handler crashed: %s", exc)
             if not self._should_suppress_errors():

@@ -44,6 +44,18 @@
     "default": true,
     "hint": "开启后，模型识别到登录页、验证码页或访问受限页时，不返回页面总结；关闭后则返回该页面当前可见内容的总结"
   },
+  "dedupe_processed_urls": {
+    "description": "跳过重复已处理链接",
+    "type": "bool",
+    "default": true,
+    "hint": "开启后，命中过去已成功解释过的同一链接时，本插件将不再重复处理"
+  },
+  "dedupe_processed_urls_limit": {
+    "description": "已处理链接记录上限",
+    "type": "int",
+    "default": 500,
+    "hint": "保存在插件 KV 存储中的最大记录数；超过后会自动清理最旧记录"
+  },
   "llm_timeout_sec": {
     "description": "LLM 调用超时时间（秒）",
     "type": "int",
