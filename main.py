@@ -17,6 +17,7 @@ from astrbot.core.star.star_handler import EventType
 
 from .llm_client import LLMClient
 from .prompt_utils import build_system_prompt_for_event, build_url_user_prompt_template
+from .reddit_utils import RedditParseError, is_reddit_url, prepare_reddit_prompt
 from .twitter_utils import TwitterParseError, is_twitter_url, prepare_twitter_prompt
 from .url_utils import build_url_failure_message, extract_urls_from_text, prepare_url_prompt
 from .zhihu_utils import ZhihuParseError, match_zhihu_url, prepare_zhihu_prompt
@@ -286,6 +287,21 @@ class ZssmExplain(Star):
             return self._LLMPlan(
                 user_prompt=twitter_ctx.prompt,
                 images=twitter_ctx.images,
+                cleanup_paths=[],
+            )
+
+        if is_reddit_url(target_url):
+            try:
+                reddit_ctx = await prepare_reddit_prompt(
+                    target_url,
+                    timeout_sec=timeout_sec,
+                    last_fetch_info=self._last_fetch_info,
+                )
+            except RedditParseError as exc:
+                return self._build_error_reply_plan(str(exc))
+            return self._LLMPlan(
+                user_prompt=reddit_ctx.prompt,
+                images=reddit_ctx.images,
                 cleanup_paths=[],
             )
 
