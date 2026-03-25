@@ -57,6 +57,13 @@ def _truncate_for_log(value: Any, limit: int = 400) -> str:
     return text[:limit] + "...(truncated)"
 
 
+def _normalize_bvid_prefix(bvid: str) -> str:
+    text = str(bvid or "").strip()
+    if len(text) >= 2 and text[:2].lower() == "bv":
+        return "BV" + text[2:]
+    return text
+
+
 def is_bilibili_url(url: str) -> bool:
     if not isinstance(url, str):
         return False
@@ -83,7 +90,7 @@ def extract_bvid_from_url(url: str) -> Optional[str]:
 
     matched = _BVID_PATTERN.search(target)
     if matched:
-        return matched.group(1).upper()
+        return _normalize_bvid_prefix(matched.group(1))
 
     try:
         parsed = urlparse(target)
@@ -96,7 +103,7 @@ def extract_bvid_from_url(url: str) -> Optional[str]:
         for value in values:
             matched = _BVID_PATTERN.search(str(value))
             if matched:
-                return matched.group(1).upper()
+                return _normalize_bvid_prefix(matched.group(1))
     return None
 
 
@@ -203,7 +210,7 @@ def _build_bilibili_video_context(
     if not isinstance(video, dict) or not video:
         raise BilibiliParseError("Bilibili 视频数据为空。")
 
-    bvid = str(video.get("bvid") or "").strip().upper()
+    bvid = _normalize_bvid_prefix(str(video.get("bvid") or "").strip())
     title = str(video.get("title") or "").strip()
     description = str(video.get("desc") or "").strip()
     owner = video.get("owner") or {}
