@@ -19,6 +19,11 @@ _TWEET_PATTERN = re.compile(
 )
 
 _FXTWITTER_API = "https://api.fxtwitter.com/{username}/status/{tweet_id}"
+_TWITTER_USER_AGENT = (
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/146.0.0.0 Safari/537.36"
+)
 
 
 class TwitterParseError(RuntimeError):
@@ -71,7 +76,7 @@ async def _fetch_fxtwitter_json(
 ) -> Dict[str, Any]:
     api_url = _FXTWITTER_API.format(username=username, tweet_id=tweet_id)
     headers = {
-        "User-Agent": "AstrBot-zssm/1.0 (+https://github.com/xiaoxi68/astrbot_zssm_explain)",
+        "User-Agent": _TWITTER_USER_AGENT,
         "Accept": "application/json",
     }
 
@@ -229,7 +234,7 @@ async def _download_twitter_images(photo_urls: List[str], timeout_sec: int) -> t
         return [], []
 
     headers = {
-        "User-Agent": "AstrBot-zssm/1.0 (+https://github.com/xiaoxi68/astrbot_zssm_explain)",
+        "User-Agent": _TWITTER_USER_AGENT,
         "Accept": "image/*,*/*;q=0.8",
     }
     temp_dir = tempfile.mkdtemp(prefix="astrbot_twitter_")
