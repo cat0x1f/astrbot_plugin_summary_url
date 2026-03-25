@@ -399,7 +399,11 @@ class ZssmExplain(Star):
                     timeout_sec=timeout_sec,
                 )
             except BilibiliParseError as exc:
-                return self._build_error_reply_plan(str(exc))
+                logger.warning(
+                    "zssm_explain: bilibili specialized parsing failed, fallback to generic url parser: %s",
+                    str(exc),
+                )
+                bilibili_ctx = None
             if bilibili_ctx is not None:
                 return self._LLMPlan(
                     user_prompt=bilibili_ctx.prompt,

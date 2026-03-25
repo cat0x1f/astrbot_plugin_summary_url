@@ -8,6 +8,8 @@ from dataclasses import dataclass
 from typing import Any, Dict, Optional
 from urllib.parse import parse_qs, urlparse
 
+from astrbot.api import logger
+
 try:
     import aiohttp  # type: ignore[import-not-found]
 except Exception:
@@ -46,6 +48,13 @@ class BilibiliPreparedPrompt:
 class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, req, fp, code, msg, headers, newurl):
         return None
+
+
+def _truncate_for_log(value: Any, limit: int = 400) -> str:
+    text = str(value or "").strip()
+    if len(text) <= limit:
+        return text
+    return text[:limit] + "...(truncated)"
 
 
 def is_bilibili_url(url: str) -> bool:
@@ -243,6 +252,39 @@ async def prepare_bilibili_prompt(
     if not bvid:
         return None
 
-    data = await _fetch_bilibili_video_json(bvid, timeout_sec)
-    ctx = _build_bilibili_video_context(target_url, resolved_url, data)
-    return BilibiliPreparedPrompt(prompt=build_bilibili_prompt(ctx), context=ctx)
+    last_error: Optional[BilibiliParseError] = None
+    attempts = 2
+    data: Optional[Dict[str, Any]] = None
+    for attempt in range(1, attempts + 1):
+        data = await _fetch_bilibili_video_json(bvid, timeout_sec)
+        code = int(data.get("code") or 0) if isinstance(data, dict) else -1
+        message = ""
+        if isinstance(data, dict):
+            message = str(data.get("message") or data.get("msg") or "").strip()
+        logger.info(
+            "zssm_explain: bilibili api response attempt=%s bvid=%s code=%s message=%s url=%s payload=%s",
+            attempt,
+            bvid,
+            code,
+            _truncate_for_log(message, 120),
+            resolved_url,
+            _truncate_for_log(json.dumps(data, ensure_ascii=False), 600),
+        )
+        try:
+            ctx = _build_bilibili_video_context(target_url, resolved_url, data)
+            return BilibiliPreparedPrompt(prompt=build_bilibili_prompt(ctx), context=ctx)
+        except BilibiliParseError as exc:
+            last_error = exc
+            if attempt < attempts:
+                logger.warning(
+                    "zssm_explain: bilibili parse failed, retrying attempt=%s bvid=%s error=%s",
+                    attempt,
+                    bvid,
+                    str(exc),
+                )
+                await asyncio.sleep(0.6)
+                continue
+            raise
+    if last_error is not None:
+        raise last_error
+    raise BilibiliParseError("Bilibili 视频信息获取失败，请稍后重试。")
