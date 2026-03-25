@@ -287,7 +287,7 @@ class ZssmExplain(Star):
             return self._LLMPlan(
                 user_prompt=twitter_ctx.prompt,
                 images=twitter_ctx.images,
-                cleanup_paths=[],
+                cleanup_paths=list(getattr(twitter_ctx, "cleanup_paths", []) or []),
             )
 
         if is_reddit_url(target_url):

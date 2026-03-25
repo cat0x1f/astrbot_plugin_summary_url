@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import re
+import tempfile
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
+from urllib.parse import urlparse
 
 try:
     import aiohttp  # type: ignore[import-not-found]
@@ -196,6 +199,99 @@ class TwitterPreparedPrompt:
     prompt: str
     images: List[str]
     context: TwitterContext
+    cleanup_paths: List[str] = field(default_factory=list)
+
+
+def _guess_image_suffix(url: str, content_type: str = "") -> str:
+    try:
+        path = urlparse(url).path or ""
+        _, ext = os.path.splitext(path)
+    except Exception:
+        ext = ""
+    ext = ext.lower()
+    if ext in {".jpg", ".jpeg", ".png", ".webp", ".gif"}:
+        return ext
+
+    lowered = str(content_type or "").lower()
+    if "jpeg" in lowered or "jpg" in lowered:
+        return ".jpg"
+    if "png" in lowered:
+        return ".png"
+    if "webp" in lowered:
+        return ".webp"
+    if "gif" in lowered:
+        return ".gif"
+    return ".img"
+
+
+async def _download_twitter_images(photo_urls: List[str], timeout_sec: int) -> tuple[List[str], List[str]]:
+    if not photo_urls:
+        return [], []
+
+    headers = {
+        "User-Agent": "AstrBot-zssm/1.0 (+https://github.com/xiaoxi68/astrbot_zssm_explain)",
+        "Accept": "image/*,*/*;q=0.8",
+    }
+    temp_dir = tempfile.mkdtemp(prefix="astrbot_twitter_")
+    local_paths: List[str] = []
+
+    async def _aiohttp_download(url: str, index: int) -> Optional[str]:
+        if aiohttp is None:
+            return None
+        try:
+            async with aiohttp.ClientSession(headers=headers) as session:
+                async with session.get(url, timeout=timeout_sec, allow_redirects=True) as resp:
+                    if not (200 <= int(resp.status) < 400):
+                        return None
+                    data = await resp.read()
+                    suffix = _guess_image_suffix(url, resp.headers.get("Content-Type", ""))
+                    path = os.path.join(temp_dir, f"twitter_{index}{suffix}")
+                    with open(path, "wb") as fh:
+                        fh.write(data)
+                    return path
+        except Exception:
+            return None
+
+    async def _urllib_download(url: str, index: int) -> Optional[str]:
+        import urllib.request
+
+        def _do() -> Optional[str]:
+            try:
+                req = urllib.request.Request(url, headers=headers)
+                with urllib.request.urlopen(req, timeout=timeout_sec) as resp:
+                    data = resp.read()
+                    suffix = _guess_image_suffix(
+                        url,
+                        getattr(resp, "headers", {}).get("Content-Type", ""),
+                    )
+                    path = os.path.join(temp_dir, f"twitter_{index}{suffix}")
+                    with open(path, "wb") as fh:
+                        fh.write(data)
+                    return path
+            except Exception:
+                return None
+
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(None, _do)
+
+    try:
+        for index, url in enumerate(photo_urls):
+            local_path = await _aiohttp_download(url, index)
+            if local_path is None:
+                local_path = await _urllib_download(url, index)
+            if local_path is not None:
+                local_paths.append(local_path)
+    except Exception:
+        pass
+
+    if local_paths:
+        return local_paths, [temp_dir]
+
+    try:
+        os.rmdir(temp_dir)
+    except Exception:
+        pass
+    return [], []
 
 
 async def prepare_twitter_prompt(
@@ -208,8 +304,10 @@ async def prepare_twitter_prompt(
 
     data = await _fetch_fxtwitter_json(matched.username, matched.tweet_id, timeout_sec)
     ctx = _build_twitter_context(matched, data)
+    local_images, cleanup_paths = await _download_twitter_images(ctx.photos, timeout_sec)
     return TwitterPreparedPrompt(
         prompt=build_twitter_prompt(ctx),
-        images=ctx.photos,
+        images=local_images or ctx.photos,
         context=ctx,
+        cleanup_paths=cleanup_paths,
     )
