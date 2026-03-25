@@ -17,6 +17,7 @@ from astrbot.core.star.star_handler import EventType
 
 from .llm_client import LLMClient
 from .prompt_utils import build_system_prompt_for_event, build_url_user_prompt_template
+from .coolapk_utils import is_coolapk_url, prepare_coolapk_prompt
 from .reddit_utils import RedditParseError, is_reddit_url, prepare_reddit_prompt
 from .twitter_utils import TwitterParseError, is_twitter_url, prepare_twitter_prompt
 from .url_utils import build_url_failure_message, extract_urls_from_text, prepare_url_prompt
@@ -393,15 +394,25 @@ class ZssmExplain(Star):
         max_chars = self._get_conf_int(
             URL_MAX_CHARS_KEY, DEFAULT_URL_MAX_CHARS, min_v=1000, max_v=50000
         )
-        url_ctx = await prepare_url_prompt(
-            target_url,
-            timeout_sec,
-            self._last_fetch_info,
-            max_chars=max_chars,
-            user_prompt_template=build_url_user_prompt_template(
-                intercept_access_wall=self._should_intercept_access_wall()
-            ),
+        user_prompt_template = build_url_user_prompt_template(
+            intercept_access_wall=self._should_intercept_access_wall()
         )
+        if is_coolapk_url(target_url):
+            url_ctx = await prepare_coolapk_prompt(
+                target_url,
+                timeout_sec,
+                self._last_fetch_info,
+                max_chars=max_chars,
+                user_prompt_template=user_prompt_template,
+            )
+        else:
+            url_ctx = await prepare_url_prompt(
+                target_url,
+                timeout_sec,
+                self._last_fetch_info,
+                max_chars=max_chars,
+                user_prompt_template=user_prompt_template,
+            )
         if not url_ctx:
             return self._build_error_reply_plan(
                 build_url_failure_message(self._last_fetch_info)
