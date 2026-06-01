@@ -213,7 +213,9 @@ class ZssmExplain(Star):
             return ""
         if not isinstance(elapsed_sec, (int, float)) or elapsed_sec <= 0:
             return body
-        return f"{body}\n\ncost: {elapsed_sec:.3f}s"
+        # return f"{body}\n\ncost: {elapsed_sec:.3f}s"
+        return f"{body}"
+
 
     def _should_suppress_errors(self) -> bool:
         return self._get_conf_bool(SILENT_FAIL_KEY, False)
