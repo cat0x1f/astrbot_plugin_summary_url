@@ -85,5 +85,53 @@
     "type": "string",
     "default": "",
     "hint": "用于知乎文章 / 回答 / 问题 / 想法解析；未填写时知乎链接可能无法解析"
+  },
+  "bilibili_sessdata": {
+    "description": "B站 SESSDATA",
+    "type": "string",
+    "default": "",
+    "hint": "用于获取 B 站视频字幕；留空时仅按标题与简介解释视频。获取方式见 README"
+  },
+  "bilibili_jct": {
+    "description": "B站 bili_jct",
+    "type": "string",
+    "default": "",
+    "hint": "用于获取 B 站视频字幕；与 SESSDATA 搭配使用，留空时仅按标题与简介解释视频"
+  },
+  "bilibili_max_subtitle_length": {
+    "description": "B站字幕截取上限（字符）",
+    "type": "int",
+    "default": 4000,
+    "hint": "限制传入模型的字幕长度，避免上下文过长"
+  },
+  "xiaohongshu_enabled": {
+    "description": "启用小红书解析",
+    "type": "bool",
+    "default": true,
+    "hint": "关闭后，小红书链接将不再被解析"
+  },
+  "xiaohongshu_max_desc_chars": {
+    "description": "小红书正文截取上限（字符）",
+    "type": "int",
+    "default": 2000,
+    "hint": "正文超过此长度时截断，最小值自动限制为 200"
+  },
+  "xiaohongshu_max_comments": {
+    "description": "小红书最多读取评论数",
+    "type": "int",
+    "default": 8,
+    "hint": "设为 0 可不读取评论"
+  },
+  "xiaohongshu_max_images": {
+    "description": "小红书最多读取图片数",
+    "type": "int",
+    "default": 9,
+    "hint": "设为 0 可禁用图片下载；最多 18"
+  },
+  "xiaohongshu_proxy": {
+    "description": "小红书抓取代理（可选）",
+    "type": "string",
+    "default": "",
+    "hint": "示例：http://127.0.0.1:7890；留空则使用服务器默认网络"
   }
 }

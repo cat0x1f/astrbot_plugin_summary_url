@@ -22,6 +22,11 @@ from .coolapk_utils import is_coolapk_url, prepare_coolapk_prompt
 from .reddit_utils import RedditParseError, is_reddit_url, prepare_reddit_prompt
 from .twitter_utils import TwitterParseError, is_twitter_url, prepare_twitter_prompt
 from .url_utils import build_url_failure_message, extract_urls_from_text, prepare_url_prompt
+from .xiaohongshu_utils import (
+    XiaohongshuParseError,
+    is_xiaohongshu_url,
+    prepare_xiaohongshu_prompt,
+)
 from .zhihu_utils import ZhihuParseError, match_zhihu_url, prepare_zhihu_prompt
 
 URL_FETCH_TIMEOUT_KEY = "url_timeout_sec"
@@ -35,12 +40,25 @@ URL_DOMAIN_BLACKLIST_KEY = "url_domain_blacklist"
 INTERCEPT_ACCESS_WALL_KEY = "intercept_access_wall"
 DEDUP_ENABLED_KEY = "dedupe_processed_urls"
 DEDUP_LIMIT_KEY = "dedupe_processed_urls_limit"
+BILIBILI_SESSDATA_KEY = "bilibili_sessdata"
+BILIBILI_JCT_KEY = "bilibili_jct"
+BILIBILI_MAX_SUBTITLE_KEY = "bilibili_max_subtitle_length"
+XHS_ENABLED_KEY = "xiaohongshu_enabled"
+XHS_MAX_DESC_KEY = "xiaohongshu_max_desc_chars"
+XHS_MAX_COMMENTS_KEY = "xiaohongshu_max_comments"
+XHS_MAX_IMAGES_KEY = "xiaohongshu_max_images"
+XHS_PROXY_KEY = "xiaohongshu_proxy"
 
 DEFAULT_URL_FETCH_TIMEOUT = 20
 DEFAULT_URL_MAX_CHARS = 6000
 DEFAULT_KEEP_ORIGINAL_PERSONA = True
 DEFAULT_DEDUP_ENABLED = True
 DEFAULT_DEDUP_LIMIT = 500
+DEFAULT_BILIBILI_MAX_SUBTITLE = 4000
+DEFAULT_XHS_ENABLED = True
+DEFAULT_XHS_MAX_DESC = 2000
+DEFAULT_XHS_MAX_COMMENTS = 8
+DEFAULT_XHS_MAX_IMAGES = 9
 ACCESS_WALL_SENTINEL = "[[ACCESS_WALL]]"
 PROCESSED_URLS_KV_KEY = "processed_urls"
 
@@ -189,6 +207,30 @@ class ZssmExplain(Star):
         if host in blacklist:
             return True
         return any(host.endswith("." + domain) for domain in blacklist)
+
+    def _build_bilibili_cookie(self) -> str:
+        sessdata = self._get_conf_str(BILIBILI_SESSDATA_KEY, "")
+        bili_jct = self._get_conf_str(BILIBILI_JCT_KEY, "")
+        parts: List[str] = []
+        if sessdata:
+            parts.append(f"SESSDATA={sessdata}")
+        if bili_jct:
+            parts.append(f"bili_jct={bili_jct}")
+        return "; ".join(parts)
+
+    def _get_xiaohongshu_settings(self) -> Dict[str, Any]:
+        return {
+            "max_desc_chars": self._get_conf_int(
+                XHS_MAX_DESC_KEY, DEFAULT_XHS_MAX_DESC, 200, 20000
+            ),
+            "max_comments": self._get_conf_int(
+                XHS_MAX_COMMENTS_KEY, DEFAULT_XHS_MAX_COMMENTS, 0, 100
+            ),
+            "max_images": self._get_conf_int(
+                XHS_MAX_IMAGES_KEY, DEFAULT_XHS_MAX_IMAGES, 0, 18
+            ),
+            "proxy": self._get_conf_str(XHS_PROXY_KEY, ""),
+        }
 
     async def _build_system_prompt(self, event: AstrMessageEvent) -> str:
         return await build_system_prompt_for_event(
@@ -399,6 +441,13 @@ class ZssmExplain(Star):
                 bilibili_ctx = await prepare_bilibili_prompt(
                     target_url,
                     timeout_sec=timeout_sec,
+                    cookie=self._build_bilibili_cookie(),
+                    max_subtitle_length=self._get_conf_int(
+                        BILIBILI_MAX_SUBTITLE_KEY,
+                        DEFAULT_BILIBILI_MAX_SUBTITLE,
+                        200,
+                        50000,
+                    ),
                 )
             except BilibiliParseError as exc:
                 return self._build_error_reply_plan(str(exc))
@@ -408,6 +457,27 @@ class ZssmExplain(Star):
                     images=[],
                     cleanup_paths=[],
                 )
+
+        if is_xiaohongshu_url(target_url):
+            if not self._get_conf_bool(XHS_ENABLED_KEY, DEFAULT_XHS_ENABLED):
+                return self._build_error_reply_plan("小红书链接解析已在插件配置中关闭。")
+            xhs_settings = self._get_xiaohongshu_settings()
+            try:
+                xhs_ctx = await prepare_xiaohongshu_prompt(
+                    target_url,
+                    timeout_sec=timeout_sec,
+                    max_desc_chars=xhs_settings["max_desc_chars"],
+                    max_comments=xhs_settings["max_comments"],
+                    max_images=xhs_settings["max_images"],
+                    proxy=xhs_settings["proxy"],
+                )
+            except XiaohongshuParseError as exc:
+                return self._build_error_reply_plan(str(exc))
+            return self._LLMPlan(
+                user_prompt=xhs_ctx.prompt,
+                images=xhs_ctx.images,
+                cleanup_paths=list(xhs_ctx.cleanup_paths),
+            )
 
         max_chars = self._get_conf_int(
             URL_MAX_CHARS_KEY, DEFAULT_URL_MAX_CHARS, min_v=1000, max_v=50000
