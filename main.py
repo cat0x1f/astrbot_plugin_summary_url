@@ -19,6 +19,7 @@ from .llm_client import LLMClient
 from .bilibili_utils import BilibiliParseError, is_bilibili_url, prepare_bilibili_prompt
 from .prompt_utils import build_system_prompt_for_event, build_url_user_prompt_template
 from .coolapk_utils import is_coolapk_url, prepare_coolapk_prompt
+from .cookie_utils import CookieCheckTool
 from .reddit_utils import RedditParseError, is_reddit_url, prepare_reddit_prompt
 from .twitter_utils import TwitterParseError, is_twitter_url, prepare_twitter_prompt
 from .url_utils import build_url_failure_message, extract_urls_from_text, prepare_url_prompt
@@ -86,6 +87,25 @@ class ZssmExplain(Star):
             get_config_provider=self._get_config_provider,
             logger=logger,
         )
+        self._register_llm_tools()
+
+    def _register_llm_tools(self) -> None:
+        try:
+            self.context.add_llm_tools(
+                CookieCheckTool(config_provider=self._cookie_check_config)
+            )
+        except Exception as exc:
+            logger.warning("zssm_explain: failed to register llm tools: %s", exc)
+
+    def _cookie_check_config(self) -> Dict[str, Any]:
+        return {
+            "sessdata": self._get_conf_str(BILIBILI_SESSDATA_KEY, ""),
+            "bili_jct": self._get_conf_str(BILIBILI_JCT_KEY, ""),
+            "zhihu_cookie": self._get_conf_str(ZHIHU_COOKIE_KEY, ""),
+            "timeout_sec": self._get_conf_int(
+                URL_FETCH_TIMEOUT_KEY, DEFAULT_URL_FETCH_TIMEOUT, 2, 60
+            ),
+        }
 
     async def initialize(self):
         return
